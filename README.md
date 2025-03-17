@@ -131,3 +131,51 @@
 문의 사항이나 제안은 kiju2912@naver.com으로 부탁드립니다.
 
 ---
+
+## sql
+ ```bash
+   sql
+CREATE TABLE `captions` (
+  `caption_id` int NOT NULL AUTO_INCREMENT,
+  `caption_name` text,
+  `pdf_id` int NOT NULL,
+  `page_number` int NOT NULL,
+  `caption_text` text,
+  `x0` double DEFAULT NULL,
+  `y0` double DEFAULT NULL,
+  `x1` double DEFAULT NULL,
+  `y1` double DEFAULT NULL,
+  PRIMARY KEY (`caption_id`),
+  KEY `pdf_id` (`pdf_id`),
+  CONSTRAINT `captions_ibfk_1` FOREIGN KEY (`pdf_id`) REFERENCES `pdf_documents` (`pdf_id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=1729 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci  CREATE TABLE `clusters` (
+  `cluster_id` int NOT NULL AUTO_INCREMENT,
+  `caption_id` int DEFAULT NULL,
+  `page_number` int NOT NULL,
+  `pdf_file_name` text,
+  `x0` double DEFAULT NULL,
+  `y0` double DEFAULT NULL,
+  `x1` double DEFAULT NULL,
+  `y1` double DEFAULT NULL,
+  PRIMARY KEY (`cluster_id`),
+  KEY `caption_id` (`caption_id`),
+  CONSTRAINT `clusters_ibfk_1` FOREIGN KEY (`caption_id`) REFERENCES `captions` (`caption_id`) ON DELETE SET NULL
+) ENGINE=InnoDB AUTO_INCREMENT=931 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci  CREATE TABLE `pdf_documents` (
+  `pdf_id` int NOT NULL AUTO_INCREMENT,
+  `file_name` text NOT NULL,
+  `processed_date` datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`pdf_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=125 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci  CREATE TABLE `tables` (
+  `table_region_id` int NOT NULL AUTO_INCREMENT,
+  `caption_id` int NOT NULL,
+  `pdf_file_name` text,
+  `page_number` int NOT NULL,
+  `x0` double DEFAULT NULL,
+  `y0` double DEFAULT NULL,
+  `x1` double DEFAULT NULL,
+  `y1` double DEFAULT NULL,
+  PRIMARY KEY (`table_region_id`),
+  KEY `caption_id` (`caption_id`),
+  CONSTRAINT `tables_ibfk_1` FOREIGN KEY (`caption_id`) REFERENCES `captions` (`caption_id`) ON DELETE CASCADE
+) ENGINE=InnoDB AUTO_INCREMENT=764 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+```
