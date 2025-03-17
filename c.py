@@ -463,7 +463,7 @@ def process_pdf(input_path, output_path):
             if not selected_lines:
                 table_rect = fitz.Rect(col_range[0], cap_rect.y1, col_range[1], cap_rect.y1 + 20)
                 if any(pn == page.number and rect_overlap_ratio(r, table_rect) > 0.8 for (pn, r, _) in drawn_table_regions):
-                    pending_rect_draws.append((page.number, table_rect, (0, 0, 1), 2))
+                    pending_rect_draws.append((page.number, table_rect, (0, 1, 0), 2))
                     pending_text_inserts.append((page.number, cap_label, (table_rect.x0, table_rect.y0 - 10), (0, 0, 1), 12))
                 else:
                     pending_rect_draws.append((page.number, table_rect, (0, 1, 0), 2))
