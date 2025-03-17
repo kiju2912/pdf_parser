@@ -132,9 +132,9 @@
 
 ---
 
-## sql
+## sql db
  ```bash
-   sql
+   
 CREATE TABLE `captions` (
   `caption_id` int NOT NULL AUTO_INCREMENT,
   `caption_name` text,
