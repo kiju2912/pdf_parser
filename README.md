@@ -50,22 +50,22 @@
 
 **예시:**  
 - **Figure 1 추출:**  
-  ![Figure 1](./output/Figure%201_1742225453790903000.pdf)  
+  ![Figure 1](./output/4/Figure%201_1742225453790903000.pdf)  
   *예시: Figure 1 영역 추출 결과*
 - **Figure 2 추출:**  
-  ![Figure 2](./output/Figure%202_1742225453785760000.pdf)  
+  ![Figure 2](./output/4/Figure%202_1742225453785760000.pdf)  
   *예시: Figure 2 영역 추출 결과*
 - **Figure 3 추출:**  
-  ![Figure 3](./output/Figure%203_1742225453806350000.pdf)  
+  ![Figure 3](./output/4/Figure%203_1742225453806350000.pdf)  
   *예시: Figure 3 영역 추출 결과*
 - **Figure 4 추출:**  
-  ![Figure 4](./output/Figure%204_1742225453824121000.pdf)  
+  ![Figure 4](./output/4/Figure%204_1742225453824121000.pdf)  
   *예시: Figure 4 영역 추출 결과*
 - **Figure 5 추출:**  
-  ![Figure 5](./output/Figure%205_1742225453827674000.pdf)  
+  ![Figure 5](./output/4/Figure%205_1742225453827674000.pdf)  
   *예시: Figure 5 영역 추출 결과*
 
-*주의: 위 이미지 경로는 처리 결과가 각각 `clustered/`, `data/`, `output/` 디렉터리에 저장되었음을 전제로 합니다. 실제 경로에 맞게 수정하세요.*
+
 
 ---
 
