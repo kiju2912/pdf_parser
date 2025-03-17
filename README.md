@@ -100,7 +100,7 @@
 
 5. **프로그램 실행:**  
    ```bash
-   python your_script_name.py
+   python c.py
    ```
 
 ---
