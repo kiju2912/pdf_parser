@@ -1,17 +1,22 @@
 import os
 import re
 import random
-import fitz  # PyMuPDF
+import fitz  # PyMuPDF: PDF 파일 읽기 및 조작 라이브러리
 import math
 from collections import deque
 import mysql.connector
 from datetime import datetime
 import time
 
+# 그룹화 허용 오차: 텍스트 블록들의 x 좌표 차이 허용치 (컬럼 검출에 사용)
 GROUP_TOLERANCE = 10
 
 def rect_overlap_ratio(r1, r2):
-    # 두 사각형의 겹치는 면적을 계산하고, 더 작은 사각형 면적 대비 비율을 반환
+    """
+    두 사각형(r1, r2) 간의 겹치는 면적 비율을 계산합니다.
+    - 겹치는 영역의 면적을 두 사각형 중 작은 면적에 대해 비율로 반환합니다.
+    - 캡션이나 영역의 중복 여부 판단 등 영역 비교에 사용됨.
+    """
     x0 = max(r1.x0, r2.x0)
     y0 = max(r1.y0, r2.y0)
     x1 = min(r1.x1, r2.x1)
@@ -22,13 +27,21 @@ def rect_overlap_ratio(r1, r2):
     return 0
 
 def already_drawn(page_number, rect, drawn_list, threshold=0.8):
-    # drawn_list에 있는 사각형 중 겹침률이 threshold 이상이면 이미 그린 것으로 판단
+    """
+    이미 그려진(rectangles) 영역과 현재 rect의 겹침 비율이 임계값(threshold) 이상이면
+    이미 처리된 영역으로 판단합니다.
+    주로 중복으로 캡션이나 클러스터 영역을 표시하지 않도록 하기 위해 사용됨.
+    """
     for pn, r in drawn_list:
         if page_number == pn and rect_overlap_ratio(rect, r) > threshold:
             return True
     return False
 
 def is_in_blocks(page_number, rect, drawn_list):
+    """
+    drawn_list에 있는 사각형 중 하나라도 현재 rect를 포함하거나 교차하는지 검사합니다.
+    이미 처리된 영역과의 중복을 방지하는 역할.
+    """
     for tup in drawn_list:
         pn, r = tup[0], tup[1]
         if page_number == pn and (r.contains(rect) or r.intersects(rect)):
@@ -36,6 +49,10 @@ def is_in_blocks(page_number, rect, drawn_list):
     return False
 
 def is_intersects_blocks(page_number, rect, drawn_list):
+    """
+    drawn_list에 있는 사각형 중 하나라도 현재 rect와 교차하는지 확인합니다.
+    영역 간의 겹침 여부를 보다 단순하게 체크할 때 사용됨.
+    """
     for tup in drawn_list:
         pn, r = tup[0], tup[1]
         if page_number == pn and r.intersects(rect):
@@ -43,13 +60,22 @@ def is_intersects_blocks(page_number, rect, drawn_list):
     return False
 
 def is_near(r1, r2, threshold):
-    """두 사각형이 threshold 이내에 있는지 판단"""
+    """
+    두 사각형(r1, r2)이 threshold 이내에 위치하는지 판단합니다.
+    - 두 사각형 사이의 최소 거리(두 사각형 경계 사이의 거리)를 계산하고,
+    그 값이 threshold 이하이면 가까이 있다고 판단.
+    - 클러스터링 알고리즘에서 인접 요소 그룹화에 사용됨.
+    """
     dx = max(r1.x0 - r2.x1, r2.x0 - r1.x1, 0)
     dy = max(r1.y0 - r2.y1, r2.y0 - r1.y1, 0)
     return (dx**2 + dy**2)**0.5 <= threshold
 
 def cluster_elements(rects, threshold=5):
-    """비텍스트 요소들의 사각형 리스트를 threshold 기준으로 클러스터링"""
+    """
+    비텍스트 요소(이미지, 드로잉 등)들의 사각형 리스트를 threshold 값을 기준으로 클러스터링합니다.
+    - 너비, 높이 등의 거리를 비교하여 인접한 요소들을 하나의 그룹(클러스터)으로 묶습니다.
+    - BFS/DFS와 유사하게 queue를 사용하여 인접한 모든 요소를 방문합니다.
+    """
     clusters = []
     visited = set()
     for i, rect in enumerate(rects):
@@ -71,7 +97,9 @@ def cluster_elements(rects, threshold=5):
 
 def merge_overlapping_rects(rects, tol=0):
     """
-    입력된 사각형 목록 중 서로 겹치거나 인접(tol 이하 차이)하는 사각형들을 반복적으로 합칩니다.
+    입력된 사각형 리스트 중 서로 겹치거나 인접(tol 이하 차이)하는 사각형들을 반복적으로 합칩니다.
+    - PDF 영역 추출 후 중복 또는 분할된 영역을 하나로 병합하는 알고리즘.
+    - while 루프를 사용하여 반복적으로 병합이 일어날 때까지 수행.
     """
     if not rects:
         return []
@@ -85,7 +113,7 @@ def merge_overlapping_rects(rects, tol=0):
             i = 0
             while i < len(merged):
                 if current.intersects(merged[i]) or current.contains(merged[i]) or merged[i].contains(current):
-                    current |= merged.pop(i)
+                    current |= merged.pop(i)  # 두 사각형의 합집합을 계산
                     changed = True
                 else:
                     i += 1
@@ -95,12 +123,13 @@ def merge_overlapping_rects(rects, tol=0):
 
 def subtract_rect(original, subtract):
     """
-    original 사각형에서 subtract 사각형과의 교집합 영역을 제외한 후보 영역들을 반환합니다.
-    (상, 하, 좌, 우 영역을 후보로 추출)
+    original 사각형에서 subtract 사각형과의 교집합 영역을 제거한 나머지 후보 영역들을 반환합니다.
+    - 상, 하, 좌, 우 영역을 각각 후보로 추출합니다.
+    - 캡션 영역 재탐지나 클러스터링 전 후보 영역 분리 시 사용됨.
     """
     if not original.intersects(subtract):
         return [original]
-    inter = original & subtract  # 교집합 영역
+    inter = original & subtract  # 두 사각형의 교집합
     candidates = []
     if inter.y0 > original.y0:
         candidates.append(fitz.Rect(original.x0, original.y0, original.x1, inter.y0))
@@ -114,8 +143,10 @@ def subtract_rect(original, subtract):
 
 def closest_points_between_rectangles(r1, r2):
     """
-    두 fitz.Rect 객체 r1, r2에 대해 각 사각형의 경계상에서
-    서로 간의 최소 거리를 이루는 두 점을 반환합니다.
+    두 사각형(r1, r2) 경계 상에서 서로의 최소 거리를 이루는 두 점을 반환합니다.
+    - 두 사각형의 상대적인 위치(겹치는지, 떨어져 있는지)에 따라
+      서로 다른 점을 선택하여 최소 거리를 계산합니다.
+    - 캡션과 클러스터 영역 매칭 시 두 영역 간의 거리를 계산하는 데 사용됨.
     """
     if r1.x1 < r2.x0:
         p1_x = r1.x1
@@ -142,6 +173,11 @@ def closest_points_between_rectangles(r1, r2):
     return (p1_x, p1_y), (p2_x, p2_y)
 
 def is_in_matched(cluster, matched_list):
+    """
+    클러스터(사각형)와 이미 매칭된 사각형들(matched_list) 중
+    거의 동일한 위치에 존재하는지 (좌표 차이가 매우 작음) 확인합니다.
+    - 매칭 후 후처리 단계에서 중복 클러스터 병합 여부 판단에 사용.
+    """
     for _, m in matched_list:
         if (abs(cluster.x0 - m.x0) < 1e-3 and abs(cluster.y0 - m.y0) < 1e-3 and
             abs(cluster.x1 - m.x1) < 1e-3 and abs(cluster.y1 - m.y1) < 1e-3):
@@ -150,7 +186,14 @@ def is_in_matched(cluster, matched_list):
 
 # ── SQL 저장 함수 ──
 def save_to_sql(file_name, table_caption_regions, figure_caption_regions, drawn_table_regions, page_caption_matching):
-    # MySQL 연결 정보 수정 (호스트, 사용자, 패스워드, 데이터베이스 이름)
+    """
+    추출한 캡션, 테이블 영역, 클러스터 매칭 정보를 MySQL 데이터베이스에 저장합니다.
+    주요 단계:
+      1. 파일 정보를 pdf_documents 테이블에 저장.
+      2. 캡션 정보를 captions 테이블에 저장 및 매핑 생성.
+      3. 테이블 영역 정보를 tables 테이블에 저장.
+      4. 클러스터 영역(매칭) 정보를 clusters 테이블에 저장.
+    """
     conn = mysql.connector.connect(
         host='localhost',
         user='root',
@@ -161,15 +204,14 @@ def save_to_sql(file_name, table_caption_regions, figure_caption_regions, drawn_
 
     cursor = conn.cursor()
     
-    # 1. pdf_documents 테이블에 파일 정보 저장
+    # 1. PDF 파일 정보 저장
     cursor.execute("INSERT INTO pdf_documents (file_name) VALUES (%s)", (file_name,))
     pdf_id = cursor.lastrowid
     
     # 캡션 정보를 저장하기 위한 매핑 (캡션 라벨 -> caption_id)
     caption_mapping = {}
     
-    # 2. 캡션 정보를 저장 (table_caption_regions, figure_caption_regions 모두)
-    # 각 튜플은 (cap_rect, cap_label, cap_text, page_number, pdf_file_name) 형식이어야 함
+    # 2. 캡션 정보 저장 (table_caption_regions, figure_caption_regions 모두)
     for region in table_caption_regions + figure_caption_regions:
         if len(region) == 5:
             cap_rect, cap_label, cap_text, page_number, pdf_file_name = region
@@ -184,10 +226,10 @@ def save_to_sql(file_name, table_caption_regions, figure_caption_regions, drawn_
         caption_id = cursor.lastrowid
         caption_mapping[cap_label] = caption_id
 
-    # 매핑: table 캡션 라벨 -> pdf 파일 경로 (table_caption_regions에 pdf_file_name 추가됨)
+    # 테이블 캡션에 대한 PDF 파일 경로 매핑 생성
     table_pdf_mapping = {cap_label: pdf_file_name for (_, cap_label, _, _, pdf_file_name) in table_caption_regions}
     
-    # 3. 그려진 표 영역 정보를 저장 (drawn_table_regions)
+    # 3. 테이블 영역 정보 저장
     for page_number, table_rect, cap_label in drawn_table_regions:
         caption_id = caption_mapping.get(cap_label)
         if caption_id is None:
@@ -199,7 +241,7 @@ def save_to_sql(file_name, table_caption_regions, figure_caption_regions, drawn_
             (caption_id, pdf_file_name, page_number, x0, y0, x1, y1)
         )
     
-    # 4. 클러스터 영역 정보를 저장 (page_caption_matching)
+    # 4. 클러스터 영역 매칭 정보 저장
     for page_number, matching in page_caption_matching.items():
         for cap_label, match_data in matching.items():
             # match_data: (cluster_rect, p_cluster, p_cap, distance, pdf_file_name)
@@ -220,43 +262,43 @@ def save_to_sql(file_name, table_caption_regions, figure_caption_regions, drawn_
 # ── 캡션(테이블 영역) PDF 저장 함수 ──
 def save_regions_as_pdf(doc, regions, document_name, drawn_table_regions):
     """
-    regions: 리스트 형태로 (cap_rect, cap_label, cap_text, page_number)
-    document_name: 원본 PDF의 파일명(확장자 제외)
-    drawn_table_regions: 테이블 영역 정보 [(page_number, table_rect, cap_label), ...]
-    저장 후 각 튜플에 pdf_file_name을 추가하여 리턴
+    추출한 캡션 영역을 기반으로 별도의 PDF 파일로 저장합니다.
+    - regions: (캡션 사각형, 캡션 라벨, 캡션 텍스트, 페이지 번호)
+    - drawn_table_regions: 동일 페이지 및 캡션 라벨에 해당하는 테이블 영역 정보를 찾아 클립 영역 결정.
+    - 저장 후 생성된 PDF 파일 경로를 regions 튜플에 추가하여 반환.
     """
     base_folder = os.path.join("output", document_name)
     os.makedirs(base_folder, exist_ok=True)
     updated_regions = []
     for region in regions:
         cap_rect, cap_label, cap_text, page_number = region
-        # drawn_table_regions에서 동일한 페이지와 캡션 라벨에 해당하는 테이블 영역을 찾음
+        # 동일 페이지와 캡션 라벨에 해당하는 테이블 영역 찾기
         table_region = None
         for entry in drawn_table_regions:
             pn, table_rect, table_cap_label = entry
             if pn == page_number and table_cap_label == cap_label:
                 table_region = table_rect
                 break
-        # 테이블 영역이 있으면 해당 영역으로 클립, 없으면 원래 캡션 영역 사용
+        # 테이블 영역이 있다면 해당 영역으로 클립, 없으면 캡션 영역 사용
         clip_rect = table_region if table_region is not None else cap_rect
         timestamp = time.time_ns()
         filename = f"{cap_label}_{timestamp}.pdf"
         filepath = os.path.join(base_folder, filename)
-        new_doc = fitz.open()  # 빈 PDF 문서 생성
+        new_doc = fitz.open()  # 새 PDF 생성
         new_doc.insert_pdf(doc, from_page=page_number, to_page=page_number)
         new_page = new_doc[0]
-        new_page.set_cropbox(clip_rect)
+        new_page.set_cropbox(clip_rect)  # 원하는 영역만 추출
         new_doc.save(filepath)
         new_doc.close()
         updated_regions.append((cap_rect, cap_label, cap_text, page_number, filepath))
     return updated_regions
 
-# ── 클러스터 영역 PDF 저장 함수 (테이블/클러스터 모두 처리) ──
+# ── 클러스터 영역 PDF 저장 함수 ──
 def save_cluster_regions_as_pdf(doc, page_caption_matching, document_name):
     """
-    page_caption_matching: {page_number: {cap_label: (cluster_rect, p_cluster, p_cap, distance)}}
-    document_name: 원본 PDF의 파일명(확장자 제외)
-    저장 후 각 매칭 튜플에 pdf_file_name을 추가하여 리턴
+    캡션과 매칭된 클러스터 영역을 개별 PDF 파일로 저장합니다.
+    - page_caption_matching: {페이지 번호: {캡션 라벨: (클러스터 사각형, p_cluster, p_cap, 거리)}}
+    - 저장 후 각 매칭 튜플에 pdf_file_name을 추가하여 반환.
     """
     base_folder = os.path.join("output", document_name)
     os.makedirs(base_folder, exist_ok=True)
@@ -279,28 +321,42 @@ def save_cluster_regions_as_pdf(doc, page_caption_matching, document_name):
     return updated_page_caption_matching
 
 def process_pdf(input_path, output_path):
+    """
+    전체 PDF 처리 파이프라인:
+      1. PDF 파일 열기 및 텍스트, 이미지, 드로잉 요소 추출
+      2. 캡션(테이블, 피규어) 검출 및 영역 추출
+      3. 텍스트 블록을 기반으로 페이지 내 컬럼(열) 검출
+      4. 캡션과 관련된 가로선(라인) 분석을 통해 테이블 영역 결정
+      5. 이미지 및 드로잉 요소를 클러스터링하여 비텍스트 영역 검출
+      6. 클러스터 영역 내 캡션 재탐지 및 텍스트 보강 클러스터링
+      7. 캡션과 클러스터 영역을 DFS 기반 매칭 알고리즘을 통해 1:1 매칭 수행
+      8. 매칭되지 않은 클러스터 영역에 대해 후처리(병합) 수행
+      9. 캡션/클러스터 영역을 개별 PDF로 저장하고, 최종 결과를 PDF에 시각화
+      10. 최종 정보를 SQL 데이터베이스에 저장
+    """
     doc = fitz.open(input_path)
     global_main_blocks = []  # (페이지 번호, 사각형, 텍스트)
     table_caption_regions = []  # (캡션 사각형, 라벨, 캡션 텍스트, 페이지 번호)
     figure_caption_regions = []  # (캡션 사각형, 라벨, 캡션 텍스트, 페이지 번호)
     drawn_table_regions = []  # (페이지 번호, 테이블 영역 사각형, 캡션 라벨)
-    drawn_rectangles = []     # (페이지 번호, 사각형)
-    
-    # 나중에 매칭 정보 저장용 (page_caption_matching)
+    drawn_rectangles = []     # (페이지 번호, 사각형) - 이미 처리된 영역 저장
+
+    # 캡션과 클러스터 매칭 정보를 저장할 딕셔너리
     page_caption_matching = {}
-    entire_col_rect = fitz.Rect()  # 모든 열을 합친 영역
+    # 페이지 내 전체 컬럼 영역: 추후 이미지/드로잉 요소의 제외 범위 결정에 사용
+    entire_col_rect = fitz.Rect()
 
-    # ── pending drawing instructions ──
-    pending_rect_draws = []          # (page_number, rect, color, width)
-    pending_main_text_rect_draws = []  # (page_number, rect, color, width)
-    pending_text_inserts = []        # (page_number, text, (x, y), color, fontsize)
-    pending_line_draws = []          # (page_number, start_point, end_point, color, width)
+    # ── 그리기 작업(pending drawing instructions) 저장 리스트 ──
+    pending_rect_draws = []          # (페이지 번호, 사각형, 색상, 선 두께)
+    pending_main_text_rect_draws = []  # (페이지 번호, 사각형, 색상, 선 두께)
+    pending_text_inserts = []        # (페이지 번호, 텍스트, 위치, 색상, 폰트 크기)
+    pending_line_draws = []          # (페이지 번호, 시작점, 종료점, 색상, 선 두께)
 
-    # 캡션 판별 패턴
+    # 캡션 판별용 정규 표현식: 피규어와 테이블
     fig_pattern = re.compile(r'(?i)^(fig(?:ure)?\.?|첨부자료|첨부파일)(\d+(?:\.\d+)?)(?P<special>.)')
     table_pattern = re.compile(r'(?i)^(table|테이블)(\d+(?:\.\d+)?)(?P<special>.)')
 
-    # ── 텍스트 블럭 처리 ──
+    # ── 1. 텍스트 블록 처리: 각 페이지별 텍스트 블록 추출 및 캡션 검출 ──
     for page in doc:
         text_blocks = page.get_text("blocks")
         for block in text_blocks:
@@ -311,6 +367,7 @@ def process_pdf(input_path, output_path):
             match_fig = fig_pattern.match(text_no_space)
             match_table = table_pattern.match(text_no_space)
             if match_fig:
+                # 피규어 캡션 검출: 특수문자가 포함된 경우에만 캡션으로 판단
                 special_char = match_fig.group("special")
                 if special_char.isalnum() or special_char.isspace():
                     continue
@@ -323,6 +380,7 @@ def process_pdf(input_path, output_path):
                 drawn_rectangles.append((page.number, cap_rect))
                 figure_caption_regions.append((cap_rect, fig_label, text, page.number))
             elif match_table:
+                # 테이블 캡션 검출: 피규어와 동일한 로직 사용
                 special_char = match_table.group("special")
                 if special_char.isalnum() or special_char.isspace():
                     continue
@@ -338,7 +396,7 @@ def process_pdf(input_path, output_path):
                 block_rect = fitz.Rect(block[:4])
                 global_main_blocks.append((page.number, block_rect, text))
     
-    # ── 열(컬럼) 검출 (본문 텍스트 블럭 기반) ──
+    # ── 2. 열(컬럼) 검출: 본문 텍스트 블록 기반으로 페이지 내 열 영역 추출 ──
     for page in doc:
         page_main_blocks = [entry for entry in global_main_blocks if entry[0] == page.number]
         page_columns = []
@@ -364,7 +422,7 @@ def process_pdf(input_path, output_path):
             page_columns.append((col_x_min, col_x_max, col_y_min, col_y_max))
             remaining_blocks = [entry for entry in remaining_blocks if not (entry[1].x1 > col_x_min and entry[1].x0 < col_x_max)]
     
-        # 페이지 내 가로선 후보 추출 (높이 < 2, 너비 > 20)
+        # 페이지 내 가로선 후보 추출: 높이 < 2, 너비 > 20인 선분
         horz_lines = []
         for obj in page.get_drawings():
             if "rect" not in obj:
@@ -373,9 +431,9 @@ def process_pdf(input_path, output_path):
             if (r.y1 - r.y0) < 2 and (r.x1 - r.x0) > 20:
                 horz_lines.append(r)
     
-        tol_x = 10  # 캡션 중앙 기준 x 허용 오차
+        tol_x = 10  # 캡션 중앙 기준 x 오차 허용
     
-        # ── 테이블 캡션 블럭에 대한 가로선 처리 ──
+        # ── 3. 테이블 캡션 블럭 처리: 캡션의 위치와 가로선 정보로 테이블 영역 결정 ──
         for cap_rect, cap_label, text, cap_page in table_caption_regions:
             if cap_page != page.number:
                 continue
@@ -524,7 +582,7 @@ def process_pdf(input_path, output_path):
     
         # End of table caption horizontal line handling
     
-    # ── 테이블 영역과 겹치는 본문 텍스트 블럭 제거 ──
+    # ── 4. 본문 텍스트 블록 중 테이블 영역과 겹치는 부분 제거 ──
     filtered_global_main_blocks = []
     for entry in global_main_blocks:
         page_num, rect, text = entry
@@ -536,7 +594,7 @@ def process_pdf(input_path, output_path):
         if not skip:
             filtered_global_main_blocks.append(entry)
     
-    # ── 열(컬럼) 검출 (시각화용) ──
+    # ── 5. 열(컬럼) 검출 (시각화용): 추출된 텍스트 블록들을 그룹화하여 컬럼 영역 표시 ──
     remaining_blocks = filtered_global_main_blocks.copy()
     columns = []
     while remaining_blocks:
@@ -594,10 +652,11 @@ def process_pdf(input_path, output_path):
             pending_main_text_rect_draws.append((page_num, rect, group_color, 1))
             drawn_rectangles.append((page_num, rect))
     
-    # ── 이미지 및 드로잉 요소(비 텍스트 요소) 표시 ──
+    # ── 6. 이미지 및 드로잉 요소(비텍스트 요소) 클러스터링 및 추출 ──
     merged_clusters_by_page = {}
     for page in doc:
         elements_to_cluster = []
+        # 페이지 내 이미지 영역 추출
         for img in page.get_images(full=True):
             xref = img[0]
             img_rects = page.get_image_rects(xref)
@@ -612,6 +671,7 @@ def process_pdf(input_path, output_path):
                 if skip:
                     continue
                 elements_to_cluster.append(rect)
+        # 페이지 내 드로잉 요소(라인, 사각형 등) 추출
         for obj in page.get_drawings():
             rect = obj.get("rect")
             skip = False
@@ -639,6 +699,7 @@ def process_pdf(input_path, output_path):
                 continue
             elements_to_cluster.append(rect)
     
+        # 클러스터링: 가까운 요소들을 그룹화하여 병합 영역 결정
         clusters_rect = cluster_elements(elements_to_cluster, threshold=20)
         merged_cluster_rects = []
         for cluster in clusters_rect:
@@ -651,7 +712,9 @@ def process_pdf(input_path, output_path):
         merged_cluster_rects = merge_overlapping_rects(merged_cluster_rects)
         merged_clusters_by_page[page.number] = merged_cluster_rects
     
-    # ── 클러스터 영역 내 캡션 재탐지 ──
+    # ── 7. 클러스터 영역 내 캡션 재탐지 ──
+    # 본문 텍스트 블록과 클러스터 영역이 교차하는 경우, subtract_rect를 통해 후보 영역 분리 후
+    # 캡션 패턴에 따라 재탐지 수행
     for entry in filtered_global_main_blocks:
         page_num, text_rect, text = entry
         if page_num not in merged_clusters_by_page:
@@ -686,7 +749,8 @@ def process_pdf(input_path, output_path):
                         table_caption_regions.append((candidate, table_label, candidate_text, page_num))
                         drawn_rectangles.append((page_num, candidate))
     
-    # ── [텍스트 보강 클러스터링 기능 복원] ──
+    # ── 8. 텍스트 보강 클러스터링 기능 복원 ──
+    # 추가적으로 본문 텍스트 블록을 클러스터링하여 누락된 영역을 보완
     for page in doc:
         elements_to_cluster = []
         for obj in page.get_text("blocks"):
@@ -733,9 +797,11 @@ def process_pdf(input_path, output_path):
         else:
             merged_clusters_by_page[page.number] = new_cluster_rects
     
-    # ── 캡션과 클러스터 영역 매칭 (1:1) ──
+    # ── 9. 캡션과 클러스터 영역 매칭 (1:1) ──
+    # DFS(깊이 우선 탐색) 기반 매칭 알고리즘을 이용하여 캡션과 후보 클러스터를 1:1 매칭
     for page in doc:
         clusters = merged_clusters_by_page.get(page.number, [])
+        # 피규어 캡션만 대상으로 매칭 (테이블 캡션은 별도 처리)
         captions_on_page = [(cap_rect, cap_label) for cap_rect, cap_label, _, cap_page in figure_caption_regions if cap_page == page.number]
         if not captions_on_page or not clusters:
             continue
@@ -743,6 +809,7 @@ def process_pdf(input_path, output_path):
         for i, (cap_rect, cap_label) in enumerate(captions_on_page):
             candidates = []
             for j, cluster_rect in enumerate(clusters):
+                # 두 영역 사이의 가장 가까운 경계상의 점을 계산
                 p_cluster, p_cap = closest_points_between_rectangles(cluster_rect, cap_rect)
                 distance = math.hypot(p_cluster[0] - p_cap[0], p_cluster[1] - p_cap[1])
                 candidates.append((j, distance, cluster_rect, p_cluster, p_cap))
@@ -750,6 +817,12 @@ def process_pdf(input_path, output_path):
             candidate_clusters.append(candidates)
         match = {}
         def dfs(caption_idx, visited):
+            """
+            DFS 기반 매칭 알고리즘:
+              - 각 캡션 인덱스(candidate_clusters의 인덱스)에 대해
+                후보 클러스터 목록을 순회하면서 매칭 가능한 클러스터를 찾음.
+              - 이미 매칭된 클러스터에 대해 재귀적으로 다른 캡션과 매칭 가능하면 교체.
+            """
             for cand in candidate_clusters[caption_idx]:
                 cluster_idx = cand[0]
                 if cluster_idx in visited:
@@ -769,7 +842,8 @@ def process_pdf(input_path, output_path):
                     page_caption_matching[page.number] = {}
                 page_caption_matching[page.number][cap_label] = (chosen_candidate[2], chosen_candidate[3], chosen_candidate[4], chosen_candidate[1])
     
-    # ── 후처리: 매칭되지 않은 클러스터 영역 병합 (캡션과 충돌 시 병합하지 않음) ──
+    # ── 10. 후처리: 매칭되지 않은 클러스터 영역 병합 ──
+    # 매칭되지 않은 클러스터 영역 중, 캡션과 충돌하지 않는 영역은 기존 매칭 영역과 병합
     for page in doc:
         if page.number not in merged_clusters_by_page:
             continue
@@ -829,23 +903,22 @@ def process_pdf(input_path, output_path):
                     matched_list[i] = (lbl, candidate_union)
                     break
     
-    # ── 캡션 영역(테이블 영역)과 클러스터 영역을 개별 PDF로 저장 ──
-    # 원본 파일명(확장자 제외)을 document_name으로 사용
+    # ── 11. 캡션 영역(테이블 영역)과 클러스터 영역을 별도 PDF로 저장 ──
+    # 원본 파일명(확장자 제외)을 사용하여 output 폴더에 저장
     document_name = os.path.splitext(os.path.basename(input_path))[0]
     table_caption_regions = save_regions_as_pdf(doc, table_caption_regions, document_name, drawn_table_regions)
     page_caption_matching = save_cluster_regions_as_pdf(doc, page_caption_matching, document_name)
 
-
-    # 매칭 결과 표시
+    # ── 12. 매칭 결과 시각화: PDF에 클러스터 영역 및 캡션 라벨 표시 ──
     for page in doc:
         matching = page_caption_matching.get(page.number, {})
         for cap_label, match_data in matching.items():
-            # match_data: (cluster_rect, p_cluster, p_cap, distance)
+            # match_data: (클러스터 사각형, p_cluster, p_cap, 거리)
             cluster_rect = match_data[0]
             page.draw_rect(cluster_rect, (1,0,1), width=5)
             page.insert_text((cluster_rect.x0, cluster_rect.y0 - 10), cap_label, color=(1,0,1), fontsize=12)
     
-    # ── 최종 pending 리스트 처리 ──
+    # ── 13. pending 리스트에 저장된 그리기 작업 최종 수행 ──
     for (page_num, rect, color, width) in pending_rect_draws:
         doc[page_num].draw_rect(rect, color=color, width=width)
     for (page_num, rect, color, width) in pending_main_text_rect_draws:
@@ -856,15 +929,18 @@ def process_pdf(input_path, output_path):
         doc[page_num].draw_line(p1, p2, color=color, width=width)
     
     doc.save(output_path)
-    
-    
     doc.close()
     
-    # PDF 처리 후 SQL에 최종 연결 정보 저장
+    # ── 최종 SQL 저장: PDF 처리 후 모든 결과 정보를 MySQL 데이터베이스에 저장 ──
     save_to_sql(os.path.basename(input_path), table_caption_regions, figure_caption_regions, drawn_table_regions, page_caption_matching)
     print(f"Processed and saved: {os.path.basename(input_path)}")
 
 def main():
+    """
+    main 함수:
+      - 지정한 input 디렉터리 내의 모든 PDF 파일을 순차적으로 처리하여 output 디렉터리에 저장.
+      - 각 파일 처리 후 로그 출력.
+    """
     input_dir = "data"
     output_dir = "clustered"
     os.makedirs(output_dir, exist_ok=True)
