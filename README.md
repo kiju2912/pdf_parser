@@ -92,7 +92,7 @@
    ├── clustered/             # 처리된 PDF (주석 포함)
    ├── output/                # 추출된 개별 PDF 영역
    ├── README.md              # 이 파일
-   └── your_script_name.py    # 메인 처리 스크립트
+   └── c.py    # 메인 처리 스크립트
    ```
 
 4. **PDF 파일 배치:**  
