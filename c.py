@@ -184,16 +184,8 @@ def is_in_matched(cluster, matched_list):
             return True
     return False
 
-# ── SQL 저장 함수 ──
 def save_to_sql(file_name, table_caption_regions, figure_caption_regions, drawn_table_regions, page_caption_matching):
-    """
-    추출한 캡션, 테이블 영역, 클러스터 매칭 정보를 MySQL 데이터베이스에 저장합니다.
-    주요 단계:
-      1. 파일 정보를 pdf_documents 테이블에 저장.
-      2. 캡션 정보를 captions 테이블에 저장 및 매핑 생성.
-      3. 테이블 영역 정보를 tables 테이블에 저장.
-      4. 클러스터 영역(매칭) 정보를 clusters 테이블에 저장.
-    """
+    # MySQL 연결 정보 수정 (호스트, 사용자, 패스워드, 데이터베이스 이름)
     conn = mysql.connector.connect(
         host='localhost',
         user='root',
@@ -204,20 +196,20 @@ def save_to_sql(file_name, table_caption_regions, figure_caption_regions, drawn_
 
     cursor = conn.cursor()
     
-    # 1. PDF 파일 정보 저장
+    # 1. pdf_documents 테이블에 파일 정보 저장
     cursor.execute("INSERT INTO pdf_documents (file_name) VALUES (%s)", (file_name,))
     pdf_id = cursor.lastrowid
     
     # 캡션 정보를 저장하기 위한 매핑 (캡션 라벨 -> caption_id)
     caption_mapping = {}
     
-    # 2. 캡션 정보 저장 (table_caption_regions, figure_caption_regions 모두)
+    # 2. 캡션 정보를 저장 (table_caption_regions, figure_caption_regions 모두)
+    # 각 튜플은 (cap_rect, cap_label, cap_text, page_number, [pdf_file_name], [png_file_name]) 형식이어야 함
     for region in table_caption_regions + figure_caption_regions:
-        if len(region) == 5:
-            cap_rect, cap_label, cap_text, page_number, pdf_file_name = region
-        else:
-            cap_rect, cap_label, cap_text, page_number = region
-            pdf_file_name = ""
+        cap_rect, cap_label, cap_text, page_number = region[:4]
+        pdf_file_name = region[4] if len(region) >= 5 else ""
+        # png_file_name이 존재하면 가져오고, 없으면 빈 문자열
+        png_file_name = region[5] if len(region) >= 6 else ""
         x0, y0, x1, y1 = cap_rect.x0, cap_rect.y0, cap_rect.x1, cap_rect.y1
         cursor.execute(
             "INSERT INTO captions (caption_name, pdf_id, page_number, caption_text, x0, y0, x1, y1) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
@@ -226,99 +218,148 @@ def save_to_sql(file_name, table_caption_regions, figure_caption_regions, drawn_
         caption_id = cursor.lastrowid
         caption_mapping[cap_label] = caption_id
 
-    # 테이블 캡션에 대한 PDF 파일 경로 매핑 생성
-    table_pdf_mapping = {cap_label: pdf_file_name for (_, cap_label, _, _, pdf_file_name) in table_caption_regions}
+    # 매핑: table 캡션 라벨 -> pdf 파일 경로 및 png 파일 경로 (table_caption_regions에 해당 값들이 추가됨)
+    table_pdf_mapping = {cap_label: pdf_file_name for (_, cap_label, _, _, pdf_file_name, *_) in table_caption_regions}
+    table_png_mapping = {cap_label: png_file_name for (_, cap_label, _, _, _, png_file_name) in table_caption_regions}
     
-    # 3. 테이블 영역 정보 저장
+    # 3. 그려진 표 영역 정보를 저장 (drawn_table_regions) → area 테이블에 type 'table'로 저장
     for page_number, table_rect, cap_label in drawn_table_regions:
         caption_id = caption_mapping.get(cap_label)
         if caption_id is None:
             continue
         x0, y0, x1, y1 = table_rect.x0, table_rect.y0, table_rect.x1, table_rect.y1
         pdf_file_name = table_pdf_mapping.get(cap_label, '')
+        png_file_name = table_png_mapping.get(cap_label, '')
         cursor.execute(
-            "INSERT INTO tables (caption_id, pdf_file_name, page_number, x0, y0, x1, y1) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (caption_id, pdf_file_name, page_number, x0, y0, x1, y1)
+            "INSERT INTO area (caption_id, pdf_file_name, png_file_name, page_number, x0, y0, x1, y1, type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (caption_id, pdf_file_name, png_file_name, page_number, x0, y0, x1, y1, 'table')
         )
     
-    # 4. 클러스터 영역 매칭 정보 저장
+    # 4. 클러스터 영역 정보를 저장 (page_caption_matching) → area 테이블에 type 'figure'로 저장
     for page_number, matching in page_caption_matching.items():
         for cap_label, match_data in matching.items():
-            # match_data: (cluster_rect, p_cluster, p_cap, distance, pdf_file_name)
-            cluster_rect, p_cluster, p_cap, distance, pdf_file_name = match_data
+            # match_data: (cluster_rect, p_cluster, p_cap, distance, pdf_file_name, [png_file_name])
+            cluster_rect, p_cluster, p_cap, distance = match_data[:4]
+            pdf_file_name = match_data[4] if len(match_data) >= 5 else ""
+            png_file_name = match_data[5] if len(match_data) >= 6 else ""
             caption_id = caption_mapping.get(cap_label)
             if caption_id is None:
                 continue
             x0, y0, x1, y1 = cluster_rect.x0, cluster_rect.y0, cluster_rect.x1, cluster_rect.y1
             cursor.execute(
-                "INSERT INTO clusters (caption_id, page_number, pdf_file_name, x0, y0, x1, y1) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (caption_id, page_number, pdf_file_name, x0, y0, x1, y1)
+                "INSERT INTO area (caption_id, pdf_file_name, png_file_name, page_number, x0, y0, x1, y1, type) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (caption_id, pdf_file_name, png_file_name, page_number, x0, y0, x1, y1, 'figure')
             )
     
     conn.commit()
     cursor.close()
     conn.close()
+    return pdf_id
 
-# ── 캡션(테이블 영역) PDF 저장 함수 ──
+
+
+def save_page_as_png(page, cap_label, timestamp, png_folder):
+    """
+    주어진 페이지 영역을 PNG 파일로 저장합니다.
+    :param page: fitz.Page 객체
+    :param cap_label: 캡션 라벨 (파일 이름 생성에 사용)
+    :param timestamp: 시간 스탬프 (파일 이름 생성에 사용)
+    :param png_folder: 저장될 PNG 폴더 경로 (예: output/png/문서명)
+    :return: PNG 파일 경로
+    """
+    os.makedirs(png_folder, exist_ok=True)
+    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+    png_filename = f"{cap_label}_{timestamp}.png"
+    png_filepath = os.path.join(png_folder, png_filename)
+    pix.save(png_filepath)
+    return png_filepath
+
+
 def save_regions_as_pdf(doc, regions, document_name, drawn_table_regions):
     """
-    추출한 캡션 영역을 기반으로 별도의 PDF 파일로 저장합니다.
-    - regions: (캡션 사각형, 캡션 라벨, 캡션 텍스트, 페이지 번호)
-    - drawn_table_regions: 동일 페이지 및 캡션 라벨에 해당하는 테이블 영역 정보를 찾아 클립 영역 결정.
-    - 저장 후 생성된 PDF 파일 경로를 regions 튜플에 추가하여 반환.
+    regions: 리스트 (cap_rect, cap_label, cap_text, page_number)
+    저장 후 각 튜플에 pdf_file_name과 png_file_name을 추가하여 리턴
+    경로: PDF는 output/pdf/문서명/파일명, PNG는 output/png/문서명/파일명
     """
-    base_folder = os.path.join("output", document_name)
-    os.makedirs(base_folder, exist_ok=True)
+    pdf_folder = os.path.join("output", "pdf", document_name)
+    png_folder = os.path.join("output", "png", document_name)
+    os.makedirs(pdf_folder, exist_ok=True)
+    os.makedirs(png_folder, exist_ok=True)
+    
     updated_regions = []
     for region in regions:
-        cap_rect, cap_label, cap_text, page_number = region
-        # 동일 페이지와 캡션 라벨에 해당하는 테이블 영역 찾기
+        cap_rect, cap_label, cap_text, page_number = region[:4]
+        # drawn_table_regions에서 동일한 페이지와 캡션 라벨에 해당하는 테이블 영역 찾기
         table_region = None
         for entry in drawn_table_regions:
             pn, table_rect, table_cap_label = entry
             if pn == page_number and table_cap_label == cap_label:
                 table_region = table_rect
                 break
-        # 테이블 영역이 있다면 해당 영역으로 클립, 없으면 캡션 영역 사용
         clip_rect = table_region if table_region is not None else cap_rect
-        timestamp = time.time_ns()
-        filename = f"{cap_label}_{timestamp}.pdf"
-        filepath = os.path.join(base_folder, filename)
-        new_doc = fitz.open()  # 새 PDF 생성
+        
+        new_doc = fitz.open()  # 빈 PDF 문서 생성
         new_doc.insert_pdf(doc, from_page=page_number, to_page=page_number)
         new_page = new_doc[0]
-        new_page.set_cropbox(clip_rect)  # 원하는 영역만 추출
-        new_doc.save(filepath)
+        # 페이지(MediaBox)와의 교집합 계산
+        clip_rect = clip_rect & new_page.rect
+        if clip_rect.is_empty or not new_page.rect.contains(clip_rect):
+            clip_rect = new_page.rect
+        new_page.set_cropbox(clip_rect)
+        
+        timestamp = time.time_ns()
+        pdf_filename = f"{cap_label}_{timestamp}.pdf"
+        pdf_filepath = os.path.join(pdf_folder, pdf_filename)
+        new_doc.save(pdf_filepath)
+        
+        # 별도 함수 호출하여 PNG로 저장
+        png_filepath = save_page_as_png(new_page, cap_label, timestamp, png_folder)
+        
         new_doc.close()
-        updated_regions.append((cap_rect, cap_label, cap_text, page_number, filepath))
+        updated_regions.append((cap_rect, cap_label, cap_text, page_number, pdf_filepath, png_filepath))
     return updated_regions
 
-# ── 클러스터 영역 PDF 저장 함수 ──
+
 def save_cluster_regions_as_pdf(doc, page_caption_matching, document_name):
     """
-    캡션과 매칭된 클러스터 영역을 개별 PDF 파일로 저장합니다.
-    - page_caption_matching: {페이지 번호: {캡션 라벨: (클러스터 사각형, p_cluster, p_cap, 거리)}}
-    - 저장 후 각 매칭 튜플에 pdf_file_name을 추가하여 반환.
+    page_caption_matching: {page_number: {cap_label: (cluster_rect, p_cluster, p_cap, distance)}}
+    저장 후 각 매칭 튜플에 pdf_file_name과 png_file_name을 추가하여 리턴
+    경로: PDF는 output/pdf/문서명/파일명, PNG는 output/png/문서명/파일명
     """
-    base_folder = os.path.join("output", document_name)
-    os.makedirs(base_folder, exist_ok=True)
+    pdf_folder = os.path.join("output", "pdf", document_name)
+    png_folder = os.path.join("output", "png", document_name)
+    os.makedirs(pdf_folder, exist_ok=True)
+    os.makedirs(png_folder, exist_ok=True)
+    
     updated_page_caption_matching = {}
     for page_number, captions in page_caption_matching.items():
         updated_captions = {}
         for cap_label, match_data in captions.items():
-            cluster_rect, p_cluster, p_cap, distance = match_data
+            # match_data: (cluster_rect, p_cluster, p_cap, distance)
+            cluster_rect, p_cluster, p_cap, distance = match_data[:4]
             timestamp = time.time_ns()
-            filename = f"{cap_label}_{timestamp}.pdf"
-            filepath = os.path.join(base_folder, filename)
+            pdf_filename = f"{cap_label}_{timestamp}.pdf"
+            pdf_filepath = os.path.join(pdf_folder, pdf_filename)
+            
             new_doc = fitz.open()
             new_doc.insert_pdf(doc, from_page=page_number, to_page=page_number)
             new_page = new_doc[0]
+            # 페이지(MediaBox)와의 교집합 계산
+            cluster_rect = cluster_rect & new_page.rect
+            if cluster_rect.is_empty or not new_page.rect.contains(cluster_rect):
+                cluster_rect = new_page.rect
             new_page.set_cropbox(cluster_rect)
-            new_doc.save(filepath)
+            new_doc.save(pdf_filepath)
+            
+            # 별도 함수 호출하여 PNG로 저장
+            png_filepath = save_page_as_png(new_page, cap_label, timestamp, png_folder)
+            
             new_doc.close()
-            updated_captions[cap_label] = (cluster_rect, p_cluster, p_cap, distance, filepath)
+            updated_captions[cap_label] = (cluster_rect, p_cluster, p_cap, distance, pdf_filepath, png_filepath)
         updated_page_caption_matching[page_number] = updated_captions
     return updated_page_caption_matching
+
+
 
 def process_pdf(input_path, output_path):
     """
@@ -532,8 +573,8 @@ def process_pdf(input_path, output_path):
                 refined_y_max = max(r.y1 for r in closest_group)
                 refined_rect = fitz.Rect(refined_x_min, refined_y_min, refined_x_max, refined_y_max)
                 if any(pn == page.number and rect_overlap_ratio(r, refined_rect) > 0.8 for (pn, r, _) in drawn_table_regions):
-                    pending_rect_draws.append((page.number, refined_rect, (0, 0, 1), 2))
-                    pending_text_inserts.append((page.number, cap_label, (refined_rect.x0, refined_rect.y0 - 10), (0, 0, 1), 12))
+                    pending_rect_draws.append((page.number, refined_rect, (0, 1, 0), 2))
+                    pending_text_inserts.append((page.number, cap_label, (refined_rect.x0, refined_rect.y0 - 10), (0, 1, 0), 12))
                     drawn_rectangles.append((page.number, refined_rect))
                     new_candidates = [line for line in selected_lines if line not in closest_group]
                     if new_candidates:
@@ -932,9 +973,9 @@ def process_pdf(input_path, output_path):
     doc.close()
     
     # ── 최종 SQL 저장: PDF 처리 후 모든 결과 정보를 MySQL 데이터베이스에 저장 ──
-    save_to_sql(os.path.basename(input_path), table_caption_regions, figure_caption_regions, drawn_table_regions, page_caption_matching)
+    save_pdf_id = save_to_sql(os.path.basename(input_path), table_caption_regions, figure_caption_regions, drawn_table_regions, page_caption_matching)
     print(f"Processed and saved: {os.path.basename(input_path)}")
-
+    return save_pdf_id
 def main():
     """
     main 함수:
@@ -948,8 +989,9 @@ def main():
         if filename.lower().endswith(".pdf"):
             input_path = os.path.join(input_dir, filename)
             output_path = os.path.join(output_dir, filename)
-            process_pdf(input_path, output_path)
+            save_pdf_id = process_pdf(input_path, output_path)
             print(f"Processed: {filename}")
+            print(f"save_pdf_id: {save_pdf_id}")
     print("모든 파일 처리 완료!")
 
 if __name__ == '__main__':
